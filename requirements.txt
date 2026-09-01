@@ -3,3 +3,4 @@ google-generativeai
 chromadb
 pypdf
 pillow
+streamlit-javascript
