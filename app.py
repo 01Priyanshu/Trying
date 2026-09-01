@@ -3,139 +3,126 @@ import google.generativeai as genai
 import chromadb
 from PIL import Image
 import pypdf
-from datetime import datetime
+import io
+import base64
+from streamlit_javascript import st_javascript
 
-# --- INITIAL CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="CSE 205 IA Assistant")
+# --- 1. SETUP ---
+st.set_page_config(layout="wide", page_title="CSE 205 IA Assistant (Live Link)")
 
-# API Key Setup
 if "GEMINI_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_KEY"]
 else:
-    st.error("API Key not found in Secrets. Please add GEMINI_KEY to your Streamlit Cloud settings.")
+    st.error("Add GEMINI_KEY to Streamlit Secrets.")
     st.stop()
 
 genai.configure(api_key=api_key)
 model = genai.GenerativeModel('gemini-1.5-pro')
 
-# --- FIX: CUSTOM EMBEDDING FUNCTION ---
-# This replaces the broken 'embedding_functions.GoogleGenerativeAiEmbeddingFunction'
+# --- 2. CUSTOM EMBEDDING & DB ---
 class GeminiEmbeddingFunction(chromadb.EmbeddingFunction):
     def __call__(self, input: chromadb.Documents) -> chromadb.Embeddings:
-        model = "models/embedding-001"
-        return [
-            genai.embed_content(model=model, content=text, task_type="retrieval_document")["embedding"]
-            for text in input
-        ]
+        return [genai.embed_content(model="models/embedding-001", content=text, task_type="retrieval_document")["embedding"] for text in input]
 
-# --- IA ACCESS PASSWORD ---
-def check_password():
-    if "password_correct" not in st.session_state:
-        st.session_state["password_correct"] = False
-    
-    if not st.session_state["password_correct"]:
-        st.title("CSE 205 IA Assistant")
-        pwd = st.text_input("Enter IA Access Code", type="password")
-        if st.button("Login"):
-            if pwd == "CSE205_IA_2024": 
-                st.session_state["password_correct"] = True
-                st.rerun()
-            else:
-                st.error("Access Denied.")
-        return False
-    return True
-
-if not check_password():
-    st.stop()
-
-# --- DATABASE SETUP ---
-# We now use our Custom GeminiEmbeddingFunction()
-client = chromadb.PersistentClient(path="./cse205_db")
+client = chromadb.PersistentClient(path="./cse205_kb")
 embedding_fn = GeminiEmbeddingFunction()
-collection = client.get_or_create_collection(
-    name="course_data", 
-    embedding_function=embedding_fn
-)
+collection = client.get_or_create_collection(name="solutions", embedding_function=embedding_fn)
 
-# --- SIDEBAR ---
+# --- 3. JAVASCRIPT SCREEN CAPTURE COMPONENT ---
+# This script allows the browser to capture a specific window (Zoom)
+def capture_screen():
+    # Simple JS to trigger browser screen picker
+    js_code = """
+    (async () => {
+        if (!window.stream) {
+            window.stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        }
+        const video = document.createElement('video');
+        video.srcObject = window.stream;
+        await video.play();
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        const dataUrl = canvas.toDataURL('image/png');
+        return dataUrl;
+    })()
+    """
+    return st_javascript(js_code)
+
+# --- 4. SIDEBAR ---
 with st.sidebar:
-    st.header("Admin: Knowledge Base")
-    module = st.selectbox("Select Module", [f"Module {i}" for i in range(1, 13)] + ["Labs"])
-    pdfs = st.file_uploader("Upload Official PDFs", type="pdf", accept_multiple_files=True)
-    
-    if st.button("Index Files"):
-        if pdfs:
-            with st.spinner("Processing..."):
-                for pdf in pdfs:
-                    reader = pypdf.PdfReader(pdf)
-                    for i, page in enumerate(reader.pages):
-                        text = page.extract_text()
-                        if text:
-                            collection.upsert(
-                                documents=[text],
-                                metadatas=[{"module": module, "source": pdf.name, "page": i}],
-                                ids=[f"{pdf.name}_{i}"]
-                            )
-            st.success("Indexing Complete.")
-    
-    if st.button("Clear Database"):
-        client.delete_collection("course_data")
-        st.rerun()
+    st.title("📚 PDF Knowledge Base")
+    module_folder = st.selectbox("Module:", [f"Module {i}" for i in range(1, 15)] + ["Labs"])
+    uploaded_files = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True)
+    if st.button("Index PDFs"):
+        for pdf in uploaded_files:
+            reader = pypdf.PdfReader(pdf)
+            for i, page in enumerate(reader.pages):
+                text = page.extract_text()
+                if text:
+                    collection.upsert(documents=[text], metadatas=[{"source": pdf.name, "page": i+1}], ids=[f"{pdf.name}_{i}"])
+        st.success("Indexed!")
 
-# --- MAIN INTERFACE ---
+# --- 5. MAIN LIVE INTERFACE ---
 st.title("CSE 205 IA Assistant")
+st.subheader("🔴 Live View Analysis")
 
-col1, col2 = st.columns([1, 1])
+col_left, col_right = st.columns([1.5, 1])
 
-with col1:
-    st.subheader("Analyze Student Work")
-    screenshot = st.file_uploader("Upload Screenshot", type=['png', 'jpg', 'jpeg'])
-    question = st.text_area("What is the student asking?")
-    mode = st.radio("Mode", ["Individual Assignment", "Collaborative Lab"], horizontal=True)
+with col_left:
+    st.info("Step 1: Click 'Link Zoom Window' and select the student's share screen. \nStep 2: Click 'Sync & Analyze' whenever you need help.")
     
-    if st.button("ANALYZE", type="primary"):
-        if not (screenshot or question):
-            st.error("Please provide a screenshot or a question.")
+    # Capture Button
+    img_data = capture_screen()
+    
+    if img_data and len(img_data) > 100:
+        # Convert JS DataURL to Image for Gemini
+        header, encoded = img_data.split(",", 1)
+        data = base64.b64decode(encoded)
+        current_frame = Image.open(io.BytesIO(data))
+        st.image(current_frame, caption="Current Live View", use_column_width=True)
+        
+        analyze_btn = st.button("⚡ SYNC & ANALYZE NOW", type="primary", use_container_width=True)
+    else:
+        st.button("🔗 LINK ZOOM WINDOW", use_container_width=True)
+        analyze_btn = False
+
+# --- 6. AUTOMATED RAG LOGIC ---
+if analyze_btn and current_frame:
+    with st.spinner("Analyzing live screen against PDFs..."):
+        # STEP 1: OCR identify from Live Frame
+        id_res = model.generate_content(["Identify Activity/Lab # and method names from this screen.", current_frame])
+        search_terms = id_res.text
+        
+        # STEP 2: RAG Search
+        results = collection.query(query_texts=[search_terms], n_results=1)
+        
+        if not results['documents'][0]:
+            st.error("Could not find matching PDF solution.")
         else:
-            with st.spinner("Searching official solutions..."):
-                # 1. Extract IDs from image
-                context_str = ""
-                if screenshot:
-                    img = Image.open(screenshot)
-                    ocr = model.generate_content(["Identify Activity/Lab number and method names from this image.", img])
-                    context_str = ocr.text
-
-                # 2. RAG Search
-                search_query = f"{question} {context_str}"
-                results = collection.query(query_texts=[search_query], n_results=2)
-
-                if not results['documents'][0]:
-                    with col2: st.error("Exact course solution not found. Please provide more context.")
-                else:
-                    # 3. Final Comparison
-                    doc_text = "\n".join(results['documents'][0])
-                    prompt = f"""
-                    Role: CSE 205 Instructional Aide. 
-                    Official Solution: {doc_text}
-                    Student Question: {question}
-                    Context: {context_str}
-                    Mode: {mode}
-
-                    Instructions:
-                    - Diagnose the issue against the official solution.
-                    - Provide a 'Say to Student' hint (2-5 sentences). 
-                    - Do NOT reveal the official code.
-                    - Be direct. No 'maybe' or 'probably'.
-
-                    Format:
-                    IA DIAGNOSIS: <private fix>
-                    SAY TO STUDENT: <helpful hint>
-                    NEXT HINT: <stronger hint>
-                    """
-                    
-                    final_res = model.generate_content([prompt, img] if screenshot else [prompt])
-                    
-                    with col2:
-                        st.subheader("IA Guidance")
-                        st.markdown(final_res.text)
-                        st.caption(f"Source: {results['metadatas'][0][0]['source']}")
+            official_sol = results['documents'][0][0]
+            meta = results['metadatas'][0][0]
+            
+            # STEP 3: Diagnose
+            prompt = f"""
+            Compare the code in the IMAGE to the OFFICIAL SOLUTION below.
+            OFFICIAL SOLUTION: {official_sol}
+            
+            1. Find the exact logic/syntax error on the screen.
+            2. Be direct. No 'maybe'.
+            
+            [IA DIAGNOSIS]
+            Private fix for the IA. Reference {meta['source']} p.{meta['page']}.
+            
+            [SAY TO STUDENT]
+            Natural 2- sentence hint.
+            """
+            
+            analysis = model.generate_content([prompt, current_frame])
+            
+            with col_right:
+                st.subheader("Analysis")
+                st.markdown(analysis.text)
+                if st.button("View Official Code"):
+                    st.code(official_sol, language="java")
