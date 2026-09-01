@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 import chromadb
-from chromadb.utils import embedding_functions
 from PIL import Image
 import pypdf
 from datetime import datetime
@@ -9,8 +8,7 @@ from datetime import datetime
 # --- INITIAL CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="CSE 205 IA Assistant")
 
-# API Key Setup (From Streamlit Secrets)
-# The key you provided should be pasted into the Streamlit Cloud "Secrets" section
+# API Key Setup
 if "GEMINI_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_KEY"]
 else:
@@ -19,6 +17,16 @@ else:
 
 genai.configure(api_key=api_key)
 model = genai.GenerativeModel('gemini-1.5-pro')
+
+# --- FIX: CUSTOM EMBEDDING FUNCTION ---
+# This replaces the broken 'embedding_functions.GoogleGenerativeAiEmbeddingFunction'
+class GeminiEmbeddingFunction(chromadb.EmbeddingFunction):
+    def __call__(self, input: chromadb.Documents) -> chromadb.Embeddings:
+        model = "models/embedding-001"
+        return [
+            genai.embed_content(model=model, content=text, task_type="retrieval_document")["embedding"]
+            for text in input
+        ]
 
 # --- IA ACCESS PASSWORD ---
 def check_password():
@@ -29,7 +37,7 @@ def check_password():
         st.title("CSE 205 IA Assistant")
         pwd = st.text_input("Enter IA Access Code", type="password")
         if st.button("Login"):
-            if pwd == "CSE205_IA_2024": # Set your login password here
+            if pwd == "CSE205_IA_2024": 
                 st.session_state["password_correct"] = True
                 st.rerun()
             else:
@@ -41,8 +49,9 @@ if not check_password():
     st.stop()
 
 # --- DATABASE SETUP ---
+# We now use our Custom GeminiEmbeddingFunction()
 client = chromadb.PersistentClient(path="./cse205_db")
-embedding_fn = embedding_functions.GoogleGenerativeAiEmbeddingFunction(api_key=api_key)
+embedding_fn = GeminiEmbeddingFunction()
 collection = client.get_or_create_collection(
     name="course_data", 
     embedding_function=embedding_fn
